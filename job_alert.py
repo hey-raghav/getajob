@@ -46,7 +46,9 @@ SENIOR_EXCLUDE = [
     "5+ years", "7+ years", "10+ years", "director", "head of",
 ]
 
-LOCATION_KEYWORDS = ["delhi", "ncr", "gurugram", "gurgaon", "noida", "ghaziabad", "india", "remote", "work from home"]
+LOCATIONS = ["New Delhi", "Noida", "Greater Noida", "Ghaziabad", "Gurgaon", "Remote"]
+
+LOCATION_KEYWORDS = ["delhi", "ncr", "gurugram", "gurgaon", "noida", "greater noida", "ghaziabad", "india", "remote", "work from home"]
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -141,21 +143,24 @@ def fetch_internshala():
 # SOURCE 2: LinkedIn guest job search (internship + entry level jobs)
 # ----------------------------------------------------------------------
 
-def fetch_linkedin(keywords="cyber security", location="Delhi NCR, India"):
+def fetch_linkedin(keywords="cyber security", location="Delhi NCR, India", remote=False):
     """
     Uses LinkedIn's public "guest" job search endpoint (no login required).
     f_E=1,2 restricts to Internship (1) and Entry level (2) experience.
+    f_WT=2 restricts to remote workplace type (used when remote=True).
     This is an unofficial endpoint and may break or rate-limit; treated as best-effort.
     """
     results = []
     url = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
     params = {
         "keywords": keywords,
-        "location": location,
+        "location": "India" if remote else location,
         "f_E": "1,2",       # internship, entry level
-        "f_TPR": "r3600",   # posted in the last hour
+        "f_TPR": "r86400",  # posted in the last 24 hours (seen_jobs.json dedupes repeats)
         "start": 0,
     }
+    if remote:
+        params["f_WT"] = "2"  # remote workplace type
     try:
         resp = requests.get(url, headers=HEADERS, params=params, timeout=20)
         if resp.status_code != 200:
@@ -208,9 +213,10 @@ def fetch_linkedin(keywords="cyber security", location="Delhi NCR, India"):
 # SOURCE 3: Adzuna API (structured, free tier - optional but more reliable)
 # ----------------------------------------------------------------------
 
-def fetch_adzuna(keywords="cyber security", where="Delhi"):
+def fetch_adzuna(keywords="cyber security", where="Delhi NCR"):
     results = []
     if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
+        print("Adzuna: skipped (no app_id/app_key configured)")
         return results  # skipped if not configured
 
     url = "https://api.adzuna.com/v1/api/jobs/in/search/1"
@@ -220,14 +226,18 @@ def fetch_adzuna(keywords="cyber security", where="Delhi"):
         "what": keywords,
         "where": where,
         "results_per_page": 20,
-        "max_days_old": 1,
+        "max_days_old": 3,
         "content-type": "application/json",
     }
     try:
         resp = requests.get(url, params=params, timeout=20)
         resp.raise_for_status()
         data = resp.json()
-    except (requests.RequestException, ValueError):
+    except requests.RequestException as e:
+        print(f"Adzuna: request failed - {e}")
+        return results
+    except ValueError:
+        print(f"Adzuna: bad response (status {resp.status_code}) - {resp.text[:200]}")
         return results
 
     for job in data.get("results", []):
@@ -288,15 +298,28 @@ def main():
     all_jobs = []
 
     print("Fetching Internshala...")
-    all_jobs += fetch_internshala()
+    internshala_jobs = fetch_internshala()
+    print(f"Internshala: {len(internshala_jobs)} results")
+    all_jobs += internshala_jobs
 
-    for term in ["cyber security intern", "cyber security"]:
-        print(f"Fetching LinkedIn for '{term}'...")
-        all_jobs += fetch_linkedin(keywords=term)
+    for loc in LOCATIONS:
+        print(f"Fetching LinkedIn for '{loc}'...")
+        if loc == "Remote":
+            linkedin_jobs = fetch_linkedin(keywords="cyber security", remote=True)
+        else:
+            linkedin_jobs = fetch_linkedin(keywords="cyber security", location=f"{loc}, India")
+        print(f"LinkedIn ('{loc}'): {len(linkedin_jobs)} results")
+        all_jobs += linkedin_jobs
         time.sleep(2)  # be polite between requests
 
-    print("Fetching Adzuna...")
-    all_jobs += fetch_adzuna()
+    for loc in LOCATIONS:
+        if loc == "Remote":
+            continue  # Adzuna's "where" needs a real place; remote roles surface via keyword/location filters elsewhere
+        print(f"Fetching Adzuna for '{loc}'...")
+        adzuna_jobs = fetch_adzuna(where=loc)
+        print(f"Adzuna ('{loc}'): {len(adzuna_jobs)} results")
+        all_jobs += adzuna_jobs
+        time.sleep(1)
 
     # dedupe within this run
     unique = {}
